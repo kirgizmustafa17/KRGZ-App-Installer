@@ -1,0 +1,17 @@
+# Temporary files
+*.log
+*.tmp
+*.msixbundle
+*.exe
+
+# App specific temp folders
+ODT_KRGZ/
+ODTSetup.exe
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
