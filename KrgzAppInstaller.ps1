@@ -99,6 +99,7 @@ $script:Categories = [ordered]@{
 }
 
 $script:CurrentCategory = "all"
+$script:CurrentFilter = "all"
 $script:AppCheckBoxes = @{}
 $script:AppBorders = @{}
 $script:AppStatusDots = @{}
@@ -710,13 +711,25 @@ $mainXaml = @"
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- SEARCH -->
-        <Border Grid.Row="0" Margin="14,10,14,4" Background="#161B22" CornerRadius="8" BorderBrush="#30363D" BorderThickness="1" Padding="12,7">
-          <Grid>
-            <TextBlock Name="txtSearchHint" Text="&#x1F50D; Uygulama ara..." Foreground="#484F58" FontSize="14" VerticalAlignment="Center" IsHitTestVisible="False"/>
-            <TextBox Name="txtSearch" Background="Transparent" Foreground="#F0F6FC" BorderThickness="0" FontSize="14" VerticalAlignment="Center" CaretBrush="#58A6FF"/>
-          </Grid>
-        </Border>
+        <!-- SEARCH + FILTER -->
+        <Grid Grid.Row="0" Margin="14,10,14,4">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <Border Grid.Column="0" Background="#161B22" CornerRadius="8" BorderBrush="#30363D" BorderThickness="1" Padding="12,7" Margin="0,0,8,0">
+            <Grid>
+              <TextBlock Name="txtSearchHint" Text="&#x1F50D; Uygulama ara..." Foreground="#484F58" FontSize="14" VerticalAlignment="Center" IsHitTestVisible="False"/>
+              <TextBox Name="txtSearch" Background="Transparent" Foreground="#F0F6FC" BorderThickness="0" FontSize="14" VerticalAlignment="Center" CaretBrush="#58A6FF"/>
+            </Grid>
+          </Border>
+          <ComboBox Name="cmbFilter" Grid.Column="1" Background="#E6EDF3" Foreground="#0D1117" FontSize="12" Padding="8,6" SelectedIndex="0" MinWidth="140" VerticalAlignment="Center">
+            <ComboBoxItem Content="Tumu"/>
+            <ComboBoxItem Content="Yuklu Olanlar"/>
+            <ComboBoxItem Content="Yuklu Olmayanlar"/>
+            <ComboBoxItem Content="Guncelleme Var"/>
+          </ComboBox>
+        </Grid>
 
         <!-- APP LIST -->
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="14,6,14,0" Padding="0,0,4,0">
@@ -773,6 +786,7 @@ $btnDeselectAll = $window.FindName("btnDeselectAll")
 $btnInstall = $window.FindName("btnInstall")
 $btnCancel = $window.FindName("btnCancel")
 $chkSilent = $window.FindName("chkSilent")
+$cmbFilter = $window.FindName("cmbFilter")
 
 # ============================================================
 # HELPER: Update selected count
@@ -790,6 +804,7 @@ function Update-SelectedCount {
 # ============================================================
 function Update-AppVisibility {
     $searchText = $txtSearch.Text.Trim().ToLower()
+    $filterIndex = $cmbFilter.SelectedIndex
     foreach ($app in $script:AppCatalog) {
         $key = $app.Id + "_" + ($app.Categories -join "_")
         $border = $script:AppBorders[$key]
@@ -801,7 +816,20 @@ function Update-AppVisibility {
         $app.Desc.ToLower().Contains($searchText) -or
         $app.Id.ToLower().Contains($searchText)
 
-        if ($catMatch -and $searchMatch) {
+        # Filter by install status
+        $filterMatch = $true
+        if ($filterIndex -gt 0 -and $app.Id -ne "OFFICE_ODT") {
+            $appIdLower = $app.Id.ToLower()
+            $isInstalled = $script:StatusSyncHash.InstalledIds -contains $appIdLower
+            $hasUpgrade = $script:StatusSyncHash.UpgradeIds -contains $appIdLower
+            switch ($filterIndex) {
+                1 { $filterMatch = $isInstalled }         # Yuklu
+                2 { $filterMatch = -not $isInstalled }    # Yuklu degil
+                3 { $filterMatch = $hasUpgrade }          # Guncelleme var
+            }
+        }
+
+        if ($catMatch -and $searchMatch -and $filterMatch) {
             $border.Visibility = [System.Windows.Visibility]::Visible
         }
         else {
@@ -1001,6 +1029,10 @@ foreach ($app in $script:AppCatalog) {
 # ============================================================
 $txtSearch.Add_TextChanged({
         $txtSearchHint.Visibility = if ([string]::IsNullOrEmpty($txtSearch.Text)) { "Visible" } else { "Collapsed" }
+        Update-AppVisibility
+    })
+
+$cmbFilter.Add_SelectionChanged({
         Update-AppVisibility
     })
 
@@ -1270,13 +1302,13 @@ function Start-AppStatusCheck {
 
     $txtStatus.Text = "Uygulama durumlari kontrol ediliyor..."
 
-    $rs = [runspacefactory]::CreateRunspace()
-    $rs.Open()
-    $rs.SessionStateProxy.SetVariable("statusSync", $script:StatusSyncHash)
+    $script:StatusRS = [runspacefactory]::CreateRunspace()
+    $script:StatusRS.Open()
+    $script:StatusRS.SessionStateProxy.SetVariable("statusSync", $script:StatusSyncHash)
 
-    $ps = [powershell]::Create()
-    $ps.Runspace = $rs
-    $ps.AddScript({
+    $script:StatusPS = [powershell]::Create()
+    $script:StatusPS.Runspace = $script:StatusRS
+    $script:StatusPS.AddScript({
             param($statusSync)
 
             # Get installed apps
@@ -1315,8 +1347,8 @@ function Start-AppStatusCheck {
 
             $statusSync.IsFinished = $true
         }) | Out-Null
-    $ps.AddArgument($script:StatusSyncHash) | Out-Null
-    $ps.BeginInvoke() | Out-Null
+    $script:StatusPS.AddArgument($script:StatusSyncHash) | Out-Null
+    $script:StatusPS.BeginInvoke() | Out-Null
 
     # Timer to poll and update UI
     $script:StatusTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1330,8 +1362,8 @@ function Start-AppStatusCheck {
                 if (-not $script:IsInstalling) {
                     $txtStatus.Text = "Hazir. $installedCount yuklu uygulama, $upgradeCount guncelleme mevcut."
                 }
-                $ps.Dispose()
-                $rs.Close()
+                try { $script:StatusPS.Dispose() } catch {}
+                try { $script:StatusRS.Close() } catch {}
             }
         })
     $script:StatusTimer.Start()
