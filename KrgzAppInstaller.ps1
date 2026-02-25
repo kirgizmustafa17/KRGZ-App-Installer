@@ -290,7 +290,7 @@ function Show-OfficeInstallWindow {
 
                 # Method 1: winget ile ODT kur
                 try {
-                    $wProc = Start-Process -FilePath "winget" -ArgumentList "install --id Microsoft.OfficeDeploymentTool --accept-package-agreements --accept-source-agreements --source winget --silent" -Wait -PassThru -NoNewWindow
+                    Start-Process -FilePath "winget" -ArgumentList "install --id Microsoft.OfficeDeploymentTool --accept-package-agreements --accept-source-agreements --source winget --silent" -Wait -NoNewWindow | Out-Null
                     Start-Sleep -Seconds 2
                     # Re-check known paths after install
                     foreach ($p in $knownPaths) {
@@ -1148,16 +1148,16 @@ $btnInstall.Add_Click({
         $btnCancel.Add_Click({ $script:SyncHash.IsCancelled = $true })
 
         # --- Background Runspace ---
-        $runspace = [runspacefactory]::CreateRunspace()
-        $runspace.ApartmentState = "STA"
-        $runspace.Open()
-        $runspace.SessionStateProxy.SetVariable("syncHash", $script:SyncHash)
-        $runspace.SessionStateProxy.SetVariable("appList", $appList)
-        $runspace.SessionStateProxy.SetVariable("silentFlag", $silentFlag)
+        $script:InstallRS = [runspacefactory]::CreateRunspace()
+        $script:InstallRS.ApartmentState = "STA"
+        $script:InstallRS.Open()
+        $script:InstallRS.SessionStateProxy.SetVariable("syncHash", $script:SyncHash)
+        $script:InstallRS.SessionStateProxy.SetVariable("appList", $appList)
+        $script:InstallRS.SessionStateProxy.SetVariable("silentFlag", $silentFlag)
 
-        $psCmd = [powershell]::Create()
-        $psCmd.Runspace = $runspace
-        $psCmd.AddScript({
+        $script:InstallPS = [powershell]::Create()
+        $script:InstallPS.Runspace = $script:InstallRS
+        $script:InstallPS.AddScript({
                 param($syncHash, $appList, $silentFlag)
 
                 $total = $appList.Count
@@ -1195,10 +1195,10 @@ $btnInstall.Add_Click({
                 $syncHash.IsFinished = $true
             }) | Out-Null
 
-        $psCmd.AddArgument($script:SyncHash) | Out-Null
-        $psCmd.AddArgument($appList) | Out-Null
-        $psCmd.AddArgument($silentFlag) | Out-Null
-        $psCmd.BeginInvoke() | Out-Null
+        $script:InstallPS.AddArgument($script:SyncHash) | Out-Null
+        $script:InstallPS.AddArgument($appList) | Out-Null
+        $script:InstallPS.AddArgument($silentFlag) | Out-Null
+        $script:InstallPS.BeginInvoke() | Out-Null
 
         # --- DispatcherTimer to poll background progress ---
         $script:InstallTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1210,6 +1210,7 @@ $btnInstall.Add_Click({
 
                 if ($script:SyncHash.IsFinished) {
                     $script:InstallTimer.Stop()
+                    $script:SyncHash.IsFinished = $false  # Prevent re-entry
 
                     $cCount = $script:SyncHash.Completed.Count
                     $fCount = $script:SyncHash.Failed.Count
@@ -1251,8 +1252,8 @@ $btnInstall.Add_Click({
                     Start-AppStatusCheck
 
                     # Cleanup
-                    $psCmd.Dispose()
-                    $runspace.Close()
+                    try { $script:InstallPS.Dispose() } catch {}
+                    try { $script:InstallRS.Close() } catch {}
                 }
             })
         $script:InstallTimer.Start()
