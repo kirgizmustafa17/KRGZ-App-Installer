@@ -101,7 +101,10 @@ $script:Categories = [ordered]@{
 $script:CurrentCategory = "all"
 $script:AppCheckBoxes = @{}
 $script:AppBorders = @{}
+$script:AppStatusDots = @{}
+$script:AppStatuses = @{}
 $script:IsInstalling = $false
+$script:JustInstalled = [System.Collections.ArrayList]::new()
 
 # ============================================================
 # WINGET FUNCTIONS
@@ -897,29 +900,40 @@ foreach ($app in $script:AppCatalog) {
     $border.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#161B22")
     $border.CornerRadius = [System.Windows.CornerRadius]::new(6)
     $border.Margin = [System.Windows.Thickness]::new(0, 3, 0, 3)
-    $border.Padding = [System.Windows.Thickness]::new(14, 10, 14, 10)
+    $border.Padding = [System.Windows.Thickness]::new(0, 0, 14, 0)
     $border.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#21262D")
     $border.BorderThickness = [System.Windows.Thickness]::new(1)
     $border.Cursor = [System.Windows.Input.Cursors]::Hand
 
     $grid = New-Object System.Windows.Controls.Grid
+    $col0 = New-Object System.Windows.Controls.ColumnDefinition; $col0.Width = [System.Windows.GridLength]::new(4)
     $col1 = New-Object System.Windows.Controls.ColumnDefinition; $col1.Width = "Auto"
     $col2 = New-Object System.Windows.Controls.ColumnDefinition; $col2.Width = "*"
     $col3 = New-Object System.Windows.Controls.ColumnDefinition; $col3.Width = "Auto"
+    $grid.ColumnDefinitions.Add($col0)
     $grid.ColumnDefinitions.Add($col1)
     $grid.ColumnDefinitions.Add($col2)
     $grid.ColumnDefinitions.Add($col3)
 
+    # Status indicator (colored left strip)
+    $statusDot = New-Object System.Windows.Controls.Border
+    $statusDot.Width = 4
+    $statusDot.CornerRadius = [System.Windows.CornerRadius]::new(2)
+    $statusDot.Background = [System.Windows.Media.Brushes]::Transparent
+    $statusDot.VerticalAlignment = "Stretch"
+    $statusDot.Margin = [System.Windows.Thickness]::new(0, 0, 0, 0)
+    [System.Windows.Controls.Grid]::SetColumn($statusDot, 0)
+
     $cb = New-Object System.Windows.Controls.CheckBox
     $cb.VerticalAlignment = "Center"
-    $cb.Margin = [System.Windows.Thickness]::new(0, 0, 12, 0)
-    [System.Windows.Controls.Grid]::SetColumn($cb, 0)
+    $cb.Margin = [System.Windows.Thickness]::new(10, 0, 12, 0)
+    [System.Windows.Controls.Grid]::SetColumn($cb, 1)
     $cb.Add_Checked({ Update-SelectedCount })
     $cb.Add_Unchecked({ Update-SelectedCount })
 
     $textPanel = New-Object System.Windows.Controls.StackPanel
     $textPanel.VerticalAlignment = "Center"
-    [System.Windows.Controls.Grid]::SetColumn($textPanel, 1)
+    [System.Windows.Controls.Grid]::SetColumn($textPanel, 2)
 
     $nameBlock = New-Object System.Windows.Controls.TextBlock
     $nameBlock.Text = $app.Name
@@ -938,7 +952,7 @@ foreach ($app in $script:AppCatalog) {
 
     $idBlock = New-Object System.Windows.Controls.TextBlock
     $idBlock.VerticalAlignment = "Center"
-    [System.Windows.Controls.Grid]::SetColumn($idBlock, 2)
+    [System.Windows.Controls.Grid]::SetColumn($idBlock, 3)
     $idBlock.FontSize = 11
     $idBlock.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#484F58")
     if ($app.Id -eq "OFFICE_ODT") {
@@ -948,10 +962,13 @@ foreach ($app in $script:AppCatalog) {
         $idBlock.Text = $app.Id
     }
 
+    $grid.Children.Add($statusDot) | Out-Null
     $grid.Children.Add($cb) | Out-Null
     $grid.Children.Add($textPanel) | Out-Null
     $grid.Children.Add($idBlock) | Out-Null
     $border.Child = $grid
+
+    $script:AppStatusDots[$key] = $statusDot
 
     # Hover effects
     $border.Add_MouseEnter({
@@ -1186,6 +1203,21 @@ $btnInstall.Add_Click({
                     $btnSelectAll.IsEnabled = $true
                     $btnDeselectAll.IsEnabled = $true
 
+                    # Clear all selections
+                    foreach ($kv in $script:AppCheckBoxes.GetEnumerator()) {
+                        $kv.Value.IsChecked = $false
+                    }
+                    Update-SelectedCount
+
+                    # Mark just-installed apps with blue
+                    $script:JustInstalled.Clear()
+                    foreach ($name in $script:SyncHash.Completed) {
+                        $script:JustInstalled.Add($name) | Out-Null
+                    }
+
+                    # Refresh install status in background
+                    Start-AppStatusCheck
+
                     # Cleanup
                     $psCmd.Dispose()
                     $runspace.Close()
@@ -1193,6 +1225,120 @@ $btnInstall.Add_Click({
             })
         $script:InstallTimer.Start()
     })
+
+# ============================================================
+# APP STATUS CHECK (Background)
+# ============================================================
+$script:StatusSyncHash = [hashtable]::Synchronized(@{
+        InstalledIds = [System.Collections.ArrayList]::new()
+        UpgradeIds   = [System.Collections.ArrayList]::new()
+        IsFinished   = $false
+    })
+
+function Update-AppStatusUI {
+    foreach ($app in $script:AppCatalog) {
+        if ($app.Id -eq "OFFICE_ODT") { continue }
+        $key = $app.Id + "_" + ($app.Categories -join "_")
+        $dot = $script:AppStatusDots[$key]
+        if (-not $dot) { continue }
+
+        $appId = $app.Id.ToLower()
+
+        if ($script:JustInstalled -contains $app.Name) {
+            # Blue: just installed
+            $dot.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#58A6FF")
+        }
+        elseif ($script:StatusSyncHash.UpgradeIds -contains $appId) {
+            # Orange: update available
+            $dot.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#E3B341")
+        }
+        elseif ($script:StatusSyncHash.InstalledIds -contains $appId) {
+            # Green: installed
+            $dot.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom("#238636")
+        }
+        else {
+            # Transparent: not installed
+            $dot.Background = [System.Windows.Media.Brushes]::Transparent
+        }
+    }
+}
+
+function Start-AppStatusCheck {
+    $script:StatusSyncHash.InstalledIds.Clear()
+    $script:StatusSyncHash.UpgradeIds.Clear()
+    $script:StatusSyncHash.IsFinished = $false
+
+    $txtStatus.Text = "Uygulama durumlari kontrol ediliyor..."
+
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $rs.SessionStateProxy.SetVariable("statusSync", $script:StatusSyncHash)
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    $ps.AddScript({
+            param($statusSync)
+
+            # Get installed apps
+            try {
+                $listOutput = & winget list --accept-source-agreements 2>$null
+                if ($listOutput) {
+                    foreach ($line in $listOutput) {
+                        $parts = $line -split '\s{2,}'
+                        if ($parts.Count -ge 2) {
+                            $id = $parts[1].Trim().ToLower()
+                            if ($id -and $id -ne "id" -and $id.Contains(".")) {
+                                $statusSync.InstalledIds.Add($id) | Out-Null
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            # Get available upgrades
+            try {
+                $upgradeOutput = & winget upgrade --accept-source-agreements 2>$null
+                if ($upgradeOutput) {
+                    foreach ($line in $upgradeOutput) {
+                        $parts = $line -split '\s{2,}'
+                        if ($parts.Count -ge 2) {
+                            $id = $parts[1].Trim().ToLower()
+                            if ($id -and $id -ne "id" -and $id.Contains(".")) {
+                                $statusSync.UpgradeIds.Add($id) | Out-Null
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            $statusSync.IsFinished = $true
+        }) | Out-Null
+    $ps.AddArgument($script:StatusSyncHash) | Out-Null
+    $ps.BeginInvoke() | Out-Null
+
+    # Timer to poll and update UI
+    $script:StatusTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:StatusTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
+    $script:StatusTimer.Add_Tick({
+            if ($script:StatusSyncHash.IsFinished) {
+                $script:StatusTimer.Stop()
+                Update-AppStatusUI
+                $installedCount = $script:StatusSyncHash.InstalledIds.Count
+                $upgradeCount = $script:StatusSyncHash.UpgradeIds.Count
+                if (-not $script:IsInstalling) {
+                    $txtStatus.Text = "Hazir. $installedCount yuklu uygulama, $upgradeCount guncelleme mevcut."
+                }
+                $ps.Dispose()
+                $rs.Close()
+            }
+        })
+    $script:StatusTimer.Start()
+}
+
+# --- Run status check on startup ---
+Start-AppStatusCheck
 
 # ============================================================
 # SHOW WINDOW
