@@ -13,8 +13,14 @@ Windows için modern arayüzlü, Winget tabanlı uygulama yükleyici ve yönetic
 
 ## Kullanım
 
-PowerShell'i yönetici olarak açın ve scripti çalıştırın:
+PowerShell'i yönetici olarak açın ve aşağıdaki komutlardan birini çalıştırın:
 
+**Tek Satırda Çalıştırma (Önerilen) 🚀:**
+```powershell
+irm https://raw.githubusercontent.com/kirgizmustafa17/KRGZ-App-Installer/main/KrgzAppInstaller.ps1 | iex
+```
+
+**İndirerek Çalıştırma:**
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
 .\KrgzAppInstaller.ps1
