@@ -15,3 +15,11 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# .NET Build outputs
+bin/
+obj/
+*.user
+*.suo
+*.cache
+publish/
